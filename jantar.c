@@ -1,82 +1,171 @@
-#include <stdio.h>        // Biblioteca padrão para entrada e saída (printf)
-#include <stdlib.h>       // Biblioteca para funções como rand()
-#include <windows.h>      // Biblioteca necessária para threads e semáforos no Windows
+#include <stdio.h>
+#include <stdlib.h>
+#include <windows.h>
+#include <time.h>
 
-#define N 5 // Define o número de filósofos e garfos
+#define PENSANDO 0
+#define FAMINTO  1
+#define COMENDO  2
 
-// Cria um vetor de semáforos (um para cada garfo)
-HANDLE garfos[N];
+int NumeroDeFilosofos;
+int tempoComendo, tempoPensando;
 
-// Função que representa o comportamento de cada filósofo
-DWORD WINAPI filosofo(LPVOID num) {
-    int id = *(int*)num;  // Converte o argumento recebido em um número inteiro (ID do filósofo)
+// Mutex global (similar ao sem_t mutex)
+HANDLE mutex;
 
-    while (1) {  // Loop infinito: o filósofo vive pensando e comendo
-        // Fase de pensamento
-        printf("Filósofo %d está pensando.\n", id);
-        Sleep(rand() % 3000); // Dorme de 0 a 2999 milissegundos (0-3 segundos)
+// Um semÃ¡foro por filÃ³sofo
+HANDLE sem_fil[100];
 
-        // Para evitar deadlock, filósofos pares pegam os garfos em uma ordem,
-        // enquanto os ímpares pegam na ordem inversa
-        if (id % 2 == 0) {
-            // Filósofo par pega primeiro o garfo à esquerda
-            WaitForSingleObject(garfos[id], INFINITE);               // Espera o garfo da esquerda
-            WaitForSingleObject(garfos[(id + 1) % N], INFINITE);     // Depois o da direita
-        } else {
-            // Filósofo ímpar pega primeiro o garfo à direita
-            WaitForSingleObject(garfos[(id + 1) % N], INFINITE);     // Espera o garfo da direita
-            WaitForSingleObject(garfos[id], INFINITE);               // Depois o da esquerda
-        }
+// Estado de cada filÃ³sofo
+int estado[100];
 
-        // Fase de comer
-        printf("Filósofo %d está comendo.\n", id);
-        Sleep((rand() % 2000) + 1000); // Dorme entre 1 a 3 segundos (simulando refeição)
+// Thread handle por filÃ³sofo
+HANDLE threads[100];
 
-        // Após comer, libera os dois garfos (semáforos)
-        ReleaseSemaphore(garfos[id], 1, NULL);                    // Libera o garfo da esquerda
-        ReleaseSemaphore(garfos[(id + 1) % N], 1, NULL);          // Libera o garfo da direita
-
-        printf("Filósofo %d largou os garfos.\n", id);
-    }
-
-    return 0; // Nunca chega aqui porque o loop é infinito
-}
+// PrototipaÃ§Ã£o de funÃ§Ãµes
+DWORD WINAPI filosofo(LPVOID param);
+void mostrar();
+void pegarGarfo(int i);
+void devolverGarfo(int i);
+void intencao(int i);
+void pensar();
+void comer();
+int calcularEsquerda(int i);
+int calcularDireita(int i);
+int calcularTempoMedio(int tempo);
+void iniciar();
+void esperarThreads();
 
 int main() {
-    HANDLE threads[N];  // Vetor que armazena os "handles" das threads dos filósofos
-    int ids[N];         // Vetor que armazena os IDs de cada filósofo
+    srand(time(NULL)); // Inicializa o gerador de nÃºmeros aleatÃ³rios
 
-    // Inicializa cada semáforo (representando um garfo)
-    for (int i = 0; i < N; i++) {
-        garfos[i] = CreateSemaphore(
-            NULL,   // Segurança padrão
-            1,      // Valor inicial do semáforo (1 = disponível)
-            1,      // Valor máximo do semáforo
-            NULL    // Sem nome (semáforo local)
-        );
+    printf("Informe o numero de filosofos: ");
+    scanf("%d", &NumeroDeFilosofos);
+
+    printf("Informe o tempo medio que cada filosofo gastara comendo (em milissegundos): ");
+    scanf("%d", &tempoComendo);
+
+    printf("Informe o tempo mdio que cada filosofo gastara pensando (em milissegundos): ");
+    scanf("%d", &tempoPensando);
+
+    iniciar();          // Inicializa os semÃ¡foros e estados
+    esperarThreads();   // Aguarda as threads rodarem (infinito)
+
+    return 0;
+}
+
+// FunÃ§Ã£o que inicializa os semÃ¡foros e cria threads
+void iniciar() {
+    // Inicia o mutex principal
+    mutex = CreateMutex(NULL, FALSE, NULL);
+
+    // Inicializa o estado dos filÃ³sofos
+    for (int i = 0; i < NumeroDeFilosofos; i++) {
+        estado[i] = PENSANDO;
+        sem_fil[i] = CreateSemaphore(NULL, 0, 1, NULL); // Inicializa com 0
     }
 
-    // Cria as threads para os filósofos
-    for (int i = 0; i < N; i++) {
-        ids[i] = i; // Define o ID do filósofo
+    mostrar(); // Mostra estados iniciais
 
-        threads[i] = CreateThread(
-            NULL,              // Atributos padrão de segurança
-            0,                 // Tamanho padrão da pilha
-            filosofo,          // Função que a thread vai executar
-            &ids[i],           // Argumento passado para a função (ID do filósofo)
-            0,                 // Começa imediatamente
-            NULL               // Ignora o ID da thread retornado
-        );
+    // Cria uma thread para cada filÃ³sofo
+    for (int i = 0; i < NumeroDeFilosofos; i++) {
+        int* id = malloc(sizeof(int));
+        *id = i;
+        threads[i] = CreateThread(NULL, 0, filosofo, id, 0, NULL);
     }
+}
 
-    // Aguarda todas as threads terminarem (nunca acontece, pois elas são infinitas)
-    WaitForMultipleObjects(N, threads, TRUE, INFINITE);
+// Aguarda as threads (mas nunca termina pois sÃ£o laÃ§os infinitos)
+void esperarThreads() {
+    WaitForMultipleObjects(NumeroDeFilosofos, threads, TRUE, INFINITE);
+}
 
-    // Libera os semáforos (nunca será executado aqui, mas é boa prática deixar)
-    for (int i = 0; i < N; i++) {
-        CloseHandle(garfos[i]);
+// Thread de cada filÃ³sofo
+DWORD WINAPI filosofo(LPVOID param) {
+    int i = *(int*)param;
+    free(param);
+
+    while (1) {
+        pensar();
+        pegarGarfo(i);
+        comer();
+        devolverGarfo(i);
     }
+    return 0;
+}
 
-    return 0; // Fim do programa (teoricamente, nunca alcançado)
+// Mostra o estado atual dos filÃ³sofos
+void mostrar() {
+    for (int i = 0; i < NumeroDeFilosofos; i++) {
+        if (estado[i] == PENSANDO)
+            printf("Filosofo %d esta pensando...\n", i + 1);
+        else if (estado[i] == FAMINTO)
+            printf("Filosofo %d esta com fome...\n", i + 1);
+        else if (estado[i] == COMENDO)
+            printf("Filosofo %d esta comendo!\n", i + 1);
+    }
+    printf("\n");
+}
+
+// Calcula o Ã­ndice do filÃ³sofo Ã  esquerda
+int calcularEsquerda(int i) {
+    return (i + NumeroDeFilosofos - 1) % NumeroDeFilosofos;
+}
+
+// Calcula o Ã­ndice do filÃ³sofo Ã  direita
+int calcularDireita(int i) {
+    return (i + 1) % NumeroDeFilosofos;
+}
+
+// Gera tempo aleatÃ³rio baseado na entrada (em ms)
+int calcularTempoMedio(int tempo) {
+    return rand() % (tempo + 1);
+}
+
+// Simula tempo pensando
+void pensar() {
+    Sleep(calcularTempoMedio(tempoPensando));
+}
+
+// Simula tempo comendo
+void comer() {
+    Sleep(calcularTempoMedio(tempoComendo));
+}
+
+// Tenta pegar os garfos
+void pegarGarfo(int i) {
+    WaitForSingleObject(mutex, INFINITE); // Trava regiÃ£o crÃ­tica
+    estado[i] = FAMINTO;
+    mostrar();
+    intencao(i);
+    ReleaseMutex(mutex);                 // Libera regiÃ£o crÃ­tica
+    WaitForSingleObject(sem_fil[i], INFINITE); // Espera atÃ© poder comer
+}
+
+// Devolve os garfos
+void devolverGarfo(int i) {
+    int esq = calcularEsquerda(i);
+    int dir = calcularDireita(i);
+
+    WaitForSingleObject(mutex, INFINITE);
+    estado[i] = PENSANDO;
+    mostrar();
+    intencao(esq); // Verifica se vizinhos podem comer
+    intencao(dir);
+    ReleaseMutex(mutex);
+}
+
+// Verifica se filÃ³sofo pode comer
+void intencao(int i) {
+    int esq = calcularEsquerda(i);
+    int dir = calcularDireita(i);
+
+    if (estado[i] == FAMINTO &&
+        estado[esq] != COMENDO &&
+        estado[dir] != COMENDO) {
+
+        estado[i] = COMENDO;
+        mostrar();
+        ReleaseSemaphore(sem_fil[i], 1, NULL); // Libera para comer
+    }
 }
